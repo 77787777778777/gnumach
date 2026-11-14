@@ -1033,7 +1033,7 @@ biosmem_setup(void)
 
     for (i = 0; i < ARRAY_SIZE(biosmem_segments); i++) {
         if (biosmem_segment_size(i) == 0)
-            break;
+            continue;
 
         seg = &biosmem_segments[i];
         biosmem_load_segment(seg, VM_PAGE_HIGHMEM_LIMIT);
