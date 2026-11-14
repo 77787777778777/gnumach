@@ -124,8 +124,6 @@ i386_set_ldt(
 		case ACC_P | ACC_PL_U | ACC_CODE_R:
 		case ACC_P | ACC_PL_U | ACC_CODE_C:
 		case ACC_P | ACC_PL_U | ACC_CODE_CR:
-		case ACC_P | ACC_PL_U | ACC_CALL_GATE_16:
-		case ACC_P | ACC_PL_U | ACC_CALL_GATE:
 		    break;
 		default:
 		    return KERN_INVALID_ARGUMENT;
