@@ -629,19 +629,45 @@ static void __boot
 biosmem_setup_allocator(void)
 {
     phys_addr_t heap_start, heap_end, max_heap_start, max_heap_end;
-    phys_addr_t start, end;
-    int error;
+    const struct biosmem_map_entry *entry, *map_end;
 
+    const phys_addr_t heap_search_start = BIOSMEM_END;
+    const phys_addr_t heap_search_end   = VM_PAGE_DIRECTMAP_LIMIT;
     /*
-     * Find some memory for the heap. Look for the largest unused area in
-     * upper memory, carefully avoiding all boot data.
+     * Find some memory for the heap. Look for the largest unused and
+     * available area in the range heap_search_start to
+     * heap_search_end, carefully avoiding all boot data.
      */
+    map_end = biosmem_map + biosmem_map_size;
     max_heap_start = 0;
     max_heap_end = 0;
-    start = BIOSMEM_END;
-    end = VM_PAGE_DIRECTMAP_LIMIT;
 
-    for (;;) {
+    for (entry = biosmem_map; entry < map_end; entry++)
+    {
+      phys_addr_t start, end;
+      int error;
+
+      /* biosmem_map entries are sorted by base address so we can
+	 stop searching if... */
+      if (entry->base_addr >= heap_search_end)
+	break;
+
+      if (entry->type != BIOSMEM_TYPE_AVAILABLE)
+	continue;
+
+      start = entry->base_addr;
+      end = start + entry->length;
+
+      if (end <= heap_search_start)
+	continue;
+
+      if (start < heap_search_start)
+	start = heap_search_start;
+
+      if (end > heap_search_end)
+	end = heap_search_end;
+
+      for (;;) {
         error = biosmem_find_avail(start, end, &heap_start, &heap_end);
 
         if (error) {
@@ -654,6 +680,7 @@ biosmem_setup_allocator(void)
         }
 
         start = heap_end;
+      }
     }
 
     if (max_heap_start >= max_heap_end)
