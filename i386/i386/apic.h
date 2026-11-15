@@ -261,6 +261,11 @@ void apic_generate_cpu_id_lut(void);
 int apic_get_total_gsis(void);
 void picdisable(void);
 void lapic_eoi(void);
+/* On IOAPICs without specific EOI, the EOI workaround rewrites the route
+   entry and must not unmask a pin whose disable count is still held: a
+   level line that stays asserted would re-fire straight out of the EOI.
+   ioapic_irq_eoi consults the per-irq disable nesting count (i386/irq.c)
+   to decide whether to force the mask bit into the restored entry. */
 void ioapic_irq_eoi(int pin);
 void fix_apic_id_mask(void);
 void lapic_setup(void);

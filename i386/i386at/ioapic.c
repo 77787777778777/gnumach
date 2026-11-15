@@ -305,6 +305,11 @@ ioapic_irq_eoi(int pin)
     if (pin == 0)
         goto skip_specific_eoi;
 
+    /* Decide masking before taking ioapic_lock: irq_disable_count_held
+     * takes the per-irq lock, and __disable_irq nests the locks the
+     * other way round (per-irq lock, then ioapic_lock via mask_irq). */
+    int keep_masked = irq_disable_count_held (pin);
+
     spl_t s = simple_lock_irq(&ioapic_lock);
 
     if (!has_irq_specific_eoi) {
@@ -318,7 +323,15 @@ ioapic_irq_eoi(int pin)
         entry.both.trigger = IOAPIC_EDGE_TRIGGERED;
         ioapic_write_entry(apic, pin, entry.both);
 
-        /* Restore level entry */
+        /* Restore level entry, keeping the pin masked while the per-irq
+         * disable nesting count (i386/i386/irq.c) is held: the shared
+         * irq masking keeps the line masked until every alive entry
+         * acknowledged, and a level line that is still asserted re-fires
+         * straight out of this EOI when the restore leaves the pin
+         * unmasked. The cpu then livelocks in the interrupt path before
+         * any thread can run. */
+        if (keep_masked)
+            oldentry.both.mask = IOAPIC_MASK_DISABLED;
         ioapic_write_entry(apic, pin, oldentry.both);
       //}
     } else {

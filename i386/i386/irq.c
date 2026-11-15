@@ -26,20 +26,24 @@
 
 extern queue_head_t main_intr_queue;
 
-static void
-irq_eoi (struct irqdev *dev, int id)
-{
-#ifdef APIC
-  ioapic_irq_eoi (dev->irq[id]);
-#endif
-}
-
 /* Each array elem fits in a cache line */
 struct nested_irq {
   simple_lock_irq_data_t irq_lock; /* Protects ndisabled */
   int32_t ndisabled;
   uint32_t unused[14];
 } __attribute__((packed)) nested_irqs[NINTR];
+
+static void
+irq_eoi (struct irqdev *dev, int id)
+{
+#ifdef APIC
+  /* ioapic_irq_eoi itself keeps the pin masked for as long as a disable
+   * count is held: the EOI of an old IOAPIC rewrites the route entry,
+   * which would otherwise undo the shared irq masking and let a still
+   * asserted level line re-fire out of the EOI (see ioapic_irq_eoi). */
+  ioapic_irq_eoi (dev->irq[id]);
+#endif
+}
 
 void
 init_irqs (void)
@@ -85,6 +89,27 @@ __enable_irq (irq_t irq_nr)
     unmask_irq (irq_nr);
 
   simple_unlock_irq(s, &nirq->irq_lock);
+}
+
+/* True while at least one __disable_irq is outstanding on the line: an
+ * entry holds an unacknowledged interrupt or a dead entry has not been
+ * reaped yet. The EOI path (ioapic_irq_eoi) must keep the pin masked for
+ * as long as this holds, or a still asserted level line re-fires out of
+ * the EOI and livelocks the cpu. Takes only the per-irq lock, and is
+ * never called while holding ioapic_lock: mask_irq/unmask_irq nest the
+ * locks the other way round (per-irq lock, then ioapic_lock). */
+int
+irq_disable_count_held (irq_t irq)
+{
+  spl_t s;
+  int held;
+  struct nested_irq *nirq = &nested_irqs[irq];
+
+  assert (irq < NINTR);
+  s = simple_lock_irq(&nirq->irq_lock);
+  held = nirq->ndisabled > 0;
+  simple_unlock_irq(s, &nirq->irq_lock);
+  return held;
 }
 
 struct irqdev irqtab = {

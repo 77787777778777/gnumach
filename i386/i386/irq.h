@@ -28,6 +28,7 @@ typedef unsigned int irq_t;
 void init_irqs (void);
 void __enable_irq (irq_t irq);
 void __disable_irq (irq_t irq);
+int irq_disable_count_held (irq_t irq);
 
 extern struct irqdev irqtab;
 extern int pic_mode;
