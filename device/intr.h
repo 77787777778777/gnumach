@@ -36,6 +36,9 @@ typedef struct {
   int n_unacked;  /* Number of times irqs were disabled for this */
   ipc_port_t dst_port; /* Notification port */
   int id; /* Mapping to machine dependent irq_t array elem */
+  int stale; /* Consecutive quiescent wakes of intr_thread with this
+                entry's notifications delivered but unacked; drives the
+                shared-line recovery sweep in intr_thread */
 } user_intr_t;
 
 struct irqdev {

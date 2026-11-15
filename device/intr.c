@@ -52,6 +52,13 @@ io_return_t irqgetstat(
 
 def_simple_lock_irq_data(static, intr_lock)
 
+/* An entry whose notifications were delivered but left unacked for
+ * this many consecutive quiescent wakes of intr_thread (~1 s apart
+ * when idle) has its unacked counts dropped, exactly like the
+ * dead-entry reap does, so that a lost or never-processed
+ * notification cannot mask a shared irq line forever.  */
+#define STALE_UNACKED_SWEEPS 5
+
 queue_head_t main_intr_queue;
 static boolean_t deliver_intr (int id, ipc_port_t dst_port);
 
@@ -117,7 +124,10 @@ irq_acknowledge (ipc_port_t receive_port)
       if (!e->n_unacked)
         ret = D_INVALID_OPERATION;
       else
-        e->n_unacked--;
+        {
+          e->n_unacked--;
+          e->stale = 0;
+        }
     }
   simple_unlock_irq(s, &intr_lock);
 
@@ -141,6 +151,7 @@ queue_intr (struct irqdev *dev, int id, user_intr_t *e)
   spl_t s = simple_lock_irq(&intr_lock);
 #endif
   e->n_unacked++;
+  e->stale = 0;
   e->interrupts++;
   dev->tot_num_intr++;
 #ifdef LINUX_DEV
@@ -197,6 +208,7 @@ insert_intr_entry (struct irqdev *dev, int id, ipc_port_t dst_port)
   new->dst_port = dst_port;
   new->interrupts = 0;
   new->n_unacked = 0;
+  new->stale = 0;
 
   queue_enter (dev->intr_queue, new, user_intr_t *, chain);
 out:
@@ -320,7 +332,18 @@ intr_thread (void)
 		  irqtab.tot_num_intr--;
 
 		  simple_unlock_irq(s, &intr_lock);
-		  deliver_intr (id, dst_port);
+		  if (!deliver_intr (id, dst_port))
+		    {
+		      /* The send failed (e.g. ikm_alloc under kmsg pool
+		       * pressure).  Restore the counts so the next wake retries
+		       * the delivery: a lost send would otherwise strand the
+		       * per-irq nesting counter and mask a shared irq line
+		       * forever.  */
+		      s = simple_lock_irq(&intr_lock);
+		      e->interrupts++;
+		      irqtab.tot_num_intr++;
+		      simple_unlock_irq(s, &intr_lock);
+		    }
 		  s = simple_lock_irq(&intr_lock);
 		}
 	    }
@@ -364,6 +387,41 @@ intr_thread (void)
 	    }
 	}
       while (del || irqtab.tot_num_intr);
+
+      /* Recovery sweep, once per wake: notifications delivered but
+       * never acked keep the per-irq nesting counter (i386/i386/irq.c)
+       * above zero, which masks a shared irq line for every driver on
+       * it.  Alive-but-stuck entries are never reaped, so drop their
+       * unacked counts exactly like the dead-entry reap does, after a
+       * grace period; a level line still asserted by the device then
+       * refires and notifies the driver afresh.  A late ack from a
+       * slow-but-alive driver lands on the n_unacked == 0 guard and is
+       * rejected.  */
+      queue_iterate (&main_intr_queue, e, user_intr_t *, chain)
+	{
+	  if (!e->dst_port || e->dst_port->ip_references == 1)
+	    continue;
+
+	  if (e->n_unacked && !e->interrupts)
+	    {
+	      e->stale++;
+	      if (e->stale >= STALE_UNACKED_SWEEPS)
+		{
+		  printf ("irq handler [%d]: entry %p left %d irqs unacked,"
+			  " dropping count to unmask the line\n",
+			  e->id, e, e->n_unacked);
+		  while (e->n_unacked)
+		    {
+		      __enable_irq (irqtab.irq[e->id]);
+		      e->n_unacked--;
+		    }
+		  e->stale = 0;
+		}
+	    }
+	  else
+	    e->stale = 0;
+	}
+
       simple_unlock_irq(s, &intr_lock);
       thread_block (NULL);
     }
