@@ -566,6 +566,12 @@ Restart_pset:
 	    	panic("action_thread -- bad processor state");
 	}
 
+	/*
+	 *	Reacquire the old pset lock before removing the processor.
+	 *	pset_remove_processor() mutates shared pset state and requires
+	 *	both the pset and processor locks.
+	 */
+	pset_lock(pset);
 	s = splsched();
 	processor_lock(processor);
 
