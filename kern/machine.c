@@ -459,7 +459,11 @@ Restart_pset:
 	     *	Reassigning processor.
 	     */
 
-	    if ((integer_t) pset < (integer_t) new_pset) {
+	    /*
+	     *	Order the locks by their full pointer values.  integer_t is
+	     *	only 32 bits and truncates kernel addresses on 64-bit CPUs.
+	     */
+	    if ((vm_offset_t) pset < (vm_offset_t) new_pset) {
 		pset_lock(pset);
 		pset_lock(new_pset);
 	    }
