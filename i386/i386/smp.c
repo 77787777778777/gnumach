@@ -25,6 +25,7 @@
 #include <i386/pio.h>
 #include <i386/pit.h>
 #include <i386/vm_param.h>
+#include <i386/proc_reg.h>
 #include <i386at/idt.h>
 #include <i386at/cram.h>
 #include <i386at/acpi_parse_apic.h>
@@ -33,6 +34,10 @@
 #include <mach/machine.h>
 
 #include <kern/smp.h>
+
+/* Set to TRUE if the hypervisor advertises KVM_FEATURE_PV_UNHALT,
+ * meaning paravirtualized spinlocks are supported.  Detected in smp_init(). */
+boolean_t pv_spinlock_enabled = FALSE;
 
 /*
  * smp_data_init: initialize smp_data structure
@@ -281,6 +286,17 @@ int smp_startup_cpus(unsigned bsp_apic_id, phys_addr_t start_eip)
  */
 int smp_init(void)
 {
+    uint32_t eax, ebx, ecx, edx;
+
+    /* Detect KVM paravirtualized spinlock support:
+     * CPUID leaf 0x40000001, EBX bit 7 (KVM_FEATURE_PV_UNHALT).
+     * Must be called before any AP starts so pv_spinlock_enabled
+     * is set before lock contention between CPUs can occur. */
+    eax = 0x40000001;
+    ecx = 0;
+    cpuid(eax, ebx, ecx, edx);
+    pv_spinlock_enabled = (ebx & KVM_FEATURE_PV_UNHALT) ? TRUE : FALSE;
+
     smp_data_init();
 
     return 0;

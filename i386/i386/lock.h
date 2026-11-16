@@ -34,6 +34,16 @@
 
 #if NCPUS > 1
 #include <i386/smp.h>
+#include <i386/msr.h>
+
+/*
+ *	cpu_number() is defined as static inline in <i386/cpu_number.h>,
+ *   but including that header here creates a circular dependency:
+ *   lock.h <- cpu_number.h <- percpu.h <- processor.h <- lock.h.
+ *   Forward-declare it here; the full definition is included later
+ *   via processor.h -> kern/cpu_number.h -> i386/cpu_number.h.
+ */
+static int cpu_number(void);
 
 /*
  *	All of the locking routines are built from calls on
@@ -61,14 +71,26 @@
 
 #define	_simple_lock(l) \
     ({ \
-	while(_simple_lock_xchg_(l, 1)) \
+	while(_simple_lock_xchg_(l, 1)) { \
+	    /* Lock is held: inform the hypervisor we are spinning. */ \
+	    if (pv_spinlock_enabled) \
+		wrmsr(MSR_KVM_PV_SPINLOCK, (uint64_t)cpu_number()); \
 	    while (*(volatile natural_t *)&(l)->lock_data) \
 		cpu_pause(); \
+	} \
+	/* Lock acquired: clear the spinlock MSR. */ \
+	if (pv_spinlock_enabled) \
+	    wrmsr(MSR_KVM_PV_SPINLOCK, 0); \
 	0; \
     })
 
 #define	_simple_unlock(l) \
-	(_simple_lock_xchg_(l, 0))
+    ({ \
+	_simple_lock_xchg_(l, 0); \
+	/* Lock released: clear the spinlock MSR. */ \
+	if (pv_spinlock_enabled) \
+	    wrmsr(MSR_KVM_PV_SPINLOCK, 0); \
+    })
 
 #define	_simple_lock_try(l) \
 	(!_simple_lock_xchg_(l, 1))

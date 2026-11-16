@@ -21,6 +21,7 @@
 #ifndef _SMP_H_
 #define _SMP_H_
 
+#include <mach/boolean.h>
 #include <mach/machine/vm_types.h>
 
 int smp_init(void);
@@ -36,5 +37,15 @@ int smp_startup_cpus(unsigned bsp_apic_id, phys_addr_t start_eip);
 
 #define cpu_pause() asm volatile ("pause" : : : "memory")
 #define STARTUP_VECTOR_SHIFT	(20 - 8)
+
+/* KVM paravirtualized spinlock support.
+ *
+ * KVM exposes KVM_FEATURE_PV_UNHALT (bit 7 of EBX in CPUID leaf 0x40000001)
+ * to indicate that it supports paravirtualized spinlocks.  When available,
+ * spinning vCPUs write their APIC ID to MSR_KVM_PV_SPINLOCK so the hypervisor
+ * can yield them instead of burning CPU time in a busy loop.
+ */
+#define KVM_FEATURE_PV_UNHALT	(1 << 7)	/* CPUID 0x40000001, EBX bit 7 */
+extern boolean_t pv_spinlock_enabled;
 
 #endif
