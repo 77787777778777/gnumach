@@ -4347,6 +4347,7 @@ retry:
 			 *	      the object is temporary, and
 			 *	      not shared.
 			 *	(2) The page is not precious.
+			 *	(3) The page is not being laundered.
 			 *
 			 *	The not shared check consists of two
 			 *	parts:  (a) there are no objects that
@@ -4362,6 +4363,13 @@ retry:
 			 *	Stealing wired pages requires telling the
 			 *	pmap module to let go of them.
 			 *
+			 *	A page being laundered was wired by
+			 *	vm_pageout_setup, on top of the wiring of
+			 *	the default memory manager's map, and stays
+			 *	so until the manager frees it.  Such a page
+			 *	is copied, and vm_map_delete then frees the
+			 *	original like any other.
+			 *
 			 *	NOTE: stealing clean pages from objects
 			 *  	whose mappings survive requires a call to
 			 *	the pmap module.  Maybe later.
@@ -4374,7 +4382,8 @@ retry:
 			    src_object->temporary &&
 			    (!src_object->shadowed) &&
 			    (!src_object->use_shared_copy) &&
-			    !m->precious) {
+			    !m->precious &&
+			    !m->laundry) {
 				vm_offset_t	page_vaddr;
 
 				page_vaddr = src_start + (i * PAGE_SIZE);
