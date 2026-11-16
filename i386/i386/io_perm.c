@@ -50,6 +50,7 @@
 
 #include <mach/boolean.h>
 #include <mach/kern_return.h>
+#include <mach/machine.h>
 
 #include <ipc/ipc_port.h>
 #include <ipc/ipc_space.h>
@@ -59,11 +60,15 @@
 #include <kern/lock.h>
 #include <kern/queue.h>
 #include <kern/thread.h>
+#include <kern/cpu_number.h>
+#include <kern/printf.h>
 
 #include <device/dev_hdr.h>
 #include <device/device_emul.h>
 #include <device/device_port.h>
 
+#include <i386/apic.h>
+#include <i386/smp.h>
 #include <i386/i386/mach_i386.server.h>
 
 #include "io_perm.h"
@@ -82,6 +87,25 @@ static struct device_emulation_ops io_perm_device_emulation_ops;
 
 /* Flag to hold PCI io cfg access lock */
 static boolean_t taken_pci_cfg = FALSE;
+
+#if NCPUS > 1
+#define IO_PERM_UPDATE_IPI_RETRY_SPINS 4096U
+#define IO_PERM_UPDATE_IPI_MAX_RETRIES 1024U
+
+struct io_perm_update_request
+{
+  volatile task_t task;
+  volatile unsigned char *iopb;
+  volatile io_port_t size;
+  volatile unsigned int sequence;
+  volatile unsigned int acknowledged_sequence;
+};
+
+static struct io_perm_update_request io_perm_update_requests[NCPUS];
+
+/* Serialize updates so that a CPU never has two requests in flight.  */
+def_simple_lock_data(, io_perm_update_lock);
+#endif
 
 /* The outtran which allows MIG to convert an io_perm_t object to a port
    representing it.  */
@@ -235,6 +259,110 @@ i386_io_perm_create (const ipc_port_t master_port, io_port_t from, io_port_t to,
   return KERN_SUCCESS;
 }
 
+#if NCPUS > 1
+void
+io_perm_update_interrupt (void)
+{
+  struct io_perm_update_request *request;
+  task_t target_task;
+  unsigned int sequence;
+
+  request = &io_perm_update_requests[cpu_number ()];
+  sequence = request->sequence;
+  target_task = request->task;
+
+  if (sequence == 0 || target_task == TASK_NULL)
+    return;
+
+  /*
+   * The sender keeps the target task's bitmap lock until this handler
+   * acknowledges the request, so the bitmap cannot change during the copy.
+   * Taking that lock here could deadlock when the IPI interrupts the same
+   * CPU while it already holds the lock.
+   */
+  if (current_task () == target_task)
+    update_ktss_iopb ((unsigned char *) request->iopb, request->size);
+
+  __sync_synchronize ();
+  request->acknowledged_sequence = sequence;
+}
+
+static void
+io_perm_update_remote (task_t target_task)
+{
+  boolean_t notified[NCPUS];
+  unsigned int sequences[NCPUS];
+  int cpu;
+  int current_cpu;
+
+  current_cpu = cpu_number ();
+
+  for (cpu = 0; cpu < NCPUS; cpu++)
+    {
+      struct io_perm_update_request *request;
+      unsigned int sequence;
+
+      notified[cpu] = FALSE;
+      sequences[cpu] = 0;
+
+      if (cpu == current_cpu || !machine_slot[cpu].running)
+	continue;
+
+      request = &io_perm_update_requests[cpu];
+      sequence = request->sequence + 1;
+      if (sequence == 0)
+	sequence = 1;
+
+      /* Ignore late IPIs for an older request while publishing this one.  */
+      request->sequence = 0;
+      __sync_synchronize ();
+      request->task = target_task;
+      request->iopb = target_task->machine.iopb;
+      request->size = target_task->machine.iopb_size;
+      __sync_synchronize ();
+      request->sequence = sequence;
+      __sync_synchronize ();
+
+      sequences[cpu] = sequence;
+      notified[cpu] = TRUE;
+      smp_io_perm_update (APIC_LOGICAL_ID (cpu));
+    }
+
+  for (cpu = 0; cpu < NCPUS; cpu++)
+    {
+      struct io_perm_update_request *request;
+      unsigned int spins;
+      unsigned int retries;
+
+      if (!notified[cpu])
+	continue;
+
+      request = &io_perm_update_requests[cpu];
+      spins = 0;
+      retries = 0;
+
+      while (request->acknowledged_sequence != sequences[cpu])
+	{
+	  if (!machine_slot[cpu].running)
+	    break;
+
+	  if (++spins >= IO_PERM_UPDATE_IPI_RETRY_SPINS)
+	    {
+	      spins = 0;
+	      if (++retries > IO_PERM_UPDATE_IPI_MAX_RETRIES)
+		{
+		  printf ("I/O permission update timed out on CPU %d\n", cpu);
+		  break;
+		}
+	      smp_io_perm_update (APIC_LOGICAL_ID (cpu));
+	    }
+	  cpu_pause ();
+	}
+      __sync_synchronize ();
+    }
+}
+#endif
+
 /* Modify the I/O permissions for TARGET_TASK.  If ENABLE is TRUE, the
    permission to access the I/O ports specified by IO_PERM is granted,
    otherwise it is withdrawn.
@@ -256,6 +384,9 @@ i386_io_perm_modify (task_t target_task, io_perm_t io_perm, boolean_t enable)
   from = io_perm->from;
   to = io_perm->to;
 
+#if NCPUS > 1
+  simple_lock (&io_perm_update_lock);
+#endif
   simple_lock (&target_task->machine.iopb_lock);
   iopb = target_task->machine.iopb;
   iopb_size = target_task->machine.iopb_size;
@@ -263,6 +394,9 @@ i386_io_perm_modify (task_t target_task, io_perm_t io_perm, boolean_t enable)
   if (!enable && !iopb_size)
     {
       simple_unlock (&target_task->machine.iopb_lock);
+#if NCPUS > 1
+      simple_unlock (&io_perm_update_lock);
+#endif
       return KERN_SUCCESS;
     }
 
@@ -286,6 +420,9 @@ i386_io_perm_modify (task_t target_task, io_perm_t io_perm, boolean_t enable)
       else
 	{
 	  simple_unlock (&target_task->machine.iopb_lock);
+#if NCPUS > 1
+	  simple_unlock (&io_perm_update_lock);
+#endif
 	  return KERN_RESOURCE_SHORTAGE;
 	}
     }
@@ -301,6 +438,9 @@ i386_io_perm_modify (task_t target_task, io_perm_t io_perm, boolean_t enable)
       if ((from >> 3) + 1 > iopb_size)
 	{
 	  simple_unlock (&target_task->machine.iopb_lock);
+#if NCPUS > 1
+	  simple_unlock (&io_perm_update_lock);
+#endif
 	  return KERN_SUCCESS;
 	}
 
@@ -310,13 +450,16 @@ i386_io_perm_modify (task_t target_task, io_perm_t io_perm, boolean_t enable)
       target_task->machine.iopb_size = iopb_size;
     }
 
-#if NCPUS>1
-#warning SMP support missing (notify all CPUs running threads in that of the I/O bitmap change).
-#endif
   if (target_task == current_task())
     update_ktss_iopb (iopb, target_task->machine.iopb_size);
 
+#if NCPUS > 1
+  io_perm_update_remote (target_task);
+#endif
   simple_unlock (&target_task->machine.iopb_lock);
+#if NCPUS > 1
+  simple_unlock (&io_perm_update_lock);
+#endif
   return KERN_SUCCESS;
 }
 

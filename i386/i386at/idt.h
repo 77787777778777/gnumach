@@ -43,6 +43,9 @@
 /* Currently for TLB shootdowns */
 #define CALL_PMAP_UPDATE 0xfb
 
+/* I/O permission bitmap updates */
+#define CALL_IO_PERM_UPDATE 0xfc
+
 #include <i386/idt-gen.h>
 
 #ifndef __ASSEMBLER__

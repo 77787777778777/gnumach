@@ -74,6 +74,11 @@ void smp_pmap_update(unsigned logical_id)
     smp_send_ipi(logical_id, CALL_PMAP_UPDATE);
 }
 
+void smp_io_perm_update(unsigned logical_id)
+{
+    smp_send_ipi(logical_id, CALL_IO_PERM_UPDATE);
+}
+
 static void
 wait_for_ipi(void)
 {

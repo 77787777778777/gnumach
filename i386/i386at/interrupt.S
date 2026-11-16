@@ -59,6 +59,9 @@ ENTRY(interrupt)
 
 	cmpl	$CALL_AST_CHECK,%ecx	/* was this a SMP remote -> local ast request? */
 	je	_call_local_ast
+
+	cmpl	$CALL_IO_PERM_UPDATE,%ecx	/* was this an SMP I/O bitmap update? */
+	je	_call_io_perm_update
 #endif
 
 	movb	EXT(irqinfo)(,%ecx,2),%al	/* look up irq_info[irq].trigger */
@@ -151,6 +154,11 @@ _call_single:
 _call_local_ast:
 	call	EXT(lapic_eoi)		/* lapic EOI */
 	call	EXT(ast_check)		/* AST check on this cpu */
+	jmp	_completed
+
+_call_io_perm_update:
+	call	EXT(lapic_eoi)		/* lapic EOI */
+	call	EXT(io_perm_update_interrupt)
 	jmp	_completed
 
 #endif

@@ -60,4 +60,7 @@ extern io_perm_t convert_port_to_io_perm (ipc_port_t);
 extern ipc_port_t convert_io_perm_to_port (io_perm_t);
 extern void io_perm_deallocate (io_perm_t);
 
+/* Handle a remote I/O permission bitmap update IPI.  */
+extern void io_perm_update_interrupt (void);
+
 #endif /* _I386_IO_PERM_H_ */

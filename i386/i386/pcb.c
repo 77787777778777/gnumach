@@ -292,7 +292,7 @@ void stack_handoff(
 
 		simple_lock (&new_task->machine.iopb_lock);
 #if NCPUS>1
-#warning SMP support missing (avoid races with io_perm_modify).
+/* The bitmap lock serializes this copy with i386_io_perm_modify.  */
 #else
 		/* This optimization only works on a single processor
 		   machine, where old_task's iopb can not change while
@@ -367,7 +367,7 @@ thread_t switch_context(
 
 		simple_lock (&new_task->machine.iopb_lock);
 #if NCPUS>1
-#warning SMP support missing (avoid races with io_perm_modify).
+/* The bitmap lock serializes this copy with i386_io_perm_modify.  */
 #else
 		/* This optimization only works on a single processor
 		   machine, where old_task's iopb can not change while
