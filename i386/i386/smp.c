@@ -28,6 +28,7 @@
 #include <i386at/idt.h>
 #include <i386at/cram.h>
 #include <i386at/acpi_parse_apic.h>
+#include <kern/debug.h>
 #include <kern/printf.h>
 #include <mach/machine.h>
 
@@ -49,34 +50,73 @@ static void smp_data_init(void)
 
 }
 
-static void smp_send_ipi(unsigned logical_id, unsigned vector)
+static boolean_t
+wait_for_ipi_completion(void)
+{
+    unsigned int spins = SMP_IPI_DELIVERY_SPINS;
+
+    while (lapic->icr_low.delivery_status == SEND_PENDING) {
+        if (spins == 0)
+            return FALSE;
+        spins--;
+        cpu_pause();
+    }
+    return TRUE;
+}
+
+static boolean_t smp_send_ipi(unsigned logical_id, unsigned vector)
 {
     unsigned long flags;
+    int err;
+    boolean_t success = TRUE;
 
     cpu_intr_save(&flags);
 
-    do {
-        cpu_pause();
-    } while(lapic->icr_low.delivery_status == SEND_PENDING);
+    if (!wait_for_ipi_completion()) {
+        printf("Timed out waiting for a previous IPI delivery\n");
+        success = FALSE;
+        goto out;
+    }
+
+    lapic->error_status.r = 0;
+    (void) lapic->error_status.r;
 
     apic_send_ipi(NO_SHORTHAND, FIXED, LOGICAL, ASSERT, EDGE, vector, logical_id);
 
+    if (!wait_for_ipi_completion()) {
+        printf("Timed out waiting for IPI 0x%x delivery\n", vector);
+        success = FALSE;
+        goto out;
+    }
+
+    /* A completed ICR write does not prove that the target accepted the IPI. */
+    err = lapic->error_status.r;
+    if (err) {
+        printf("ESR error delivering IPI 0x%x: 0x%x\n", vector, err);
+        success = FALSE;
+    }
+
+out:
     cpu_intr_restore(flags);
+    return success;
 }
 
 void smp_remote_ast(unsigned logical_id)
 {
-    smp_send_ipi(logical_id, CALL_AST_CHECK);
+    if (!smp_send_ipi(logical_id, CALL_AST_CHECK))
+        panic("Failed to deliver remote AST IPI");
 }
 
 void smp_pmap_update(unsigned logical_id)
 {
-    smp_send_ipi(logical_id, CALL_PMAP_UPDATE);
+    if (!smp_send_ipi(logical_id, CALL_PMAP_UPDATE))
+        panic("Failed to deliver pmap update IPI");
 }
 
 void smp_io_perm_update(unsigned logical_id)
 {
-    smp_send_ipi(logical_id, CALL_IO_PERM_UPDATE);
+    if (!smp_send_ipi(logical_id, CALL_IO_PERM_UPDATE))
+        panic("Failed to deliver I/O permission update IPI");
 }
 
 static boolean_t

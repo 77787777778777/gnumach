@@ -50,6 +50,12 @@ void init_ast_check(const processor_t processor)
  */
 void cause_ast_check(const processor_t processor)
 {
+    /* A self-IPI cannot complete while the caller holds interrupts disabled. */
+    if (processor == current_processor()) {
+        ast_check();
+        return;
+    }
+
     smp_remote_ast(APIC_LOGICAL_ID(processor->slot_num));
 }
 
