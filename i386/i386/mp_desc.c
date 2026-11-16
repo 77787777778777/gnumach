@@ -38,6 +38,7 @@
 #include <i386/mp_desc.h>
 #include <i386/lock.h>
 #include <i386/apic.h>
+#include <i386/pit.h>
 #include <i386/locore.h>
 #include <i386/fpu.h>
 #include <i386/gdt.h>
@@ -278,6 +279,25 @@ cpu_ap_main()
     cpu_setup(cpu);
 }
 
+static boolean_t
+wait_for_ap_start(unsigned cpu)
+{
+    volatile integer_t *running = &machine_slot[cpu].running;
+    int timeout = SMP_STARTUP_TIMEOUT_US;
+
+    /* The AP publishes running only after its per-CPU state is initialized. */
+    while (*running == FALSE) {
+        if (timeout == 0) {
+            printf("AP %d failed to start within %d microseconds\n",
+                   cpu, SMP_STARTUP_TIMEOUT_US);
+            return FALSE;
+        }
+        pit_udelay(SMP_STARTUP_POLL_US);
+        timeout -= SMP_STARTUP_POLL_US;
+    }
+    return TRUE;
+}
+
 void
 start_other_cpus(void)
 {
@@ -326,14 +346,14 @@ start_other_cpus(void)
 		machine_slot[cpu].running = FALSE;
 	}
 
-	smp_startup_cpus(apic_get_current_cpu(), apboot_addr);
+	if (smp_startup_cpus(apic_get_current_cpu(), apboot_addr) != 0)
+		panic("SMP AP startup failed");
 
 	for (cpu = 1; cpu < ncpus; cpu++) {
 		printf("Waiting for AP %d\n", cpu);
 
-		do {
-			cpu_pause();
-		} while (machine_slot[cpu].running == FALSE);
+		if (!wait_for_ap_start(cpu))
+			panic("SMP AP %d failed to start", cpu);
 	}
 	printf("BSP: Completed SMP init\n");
 

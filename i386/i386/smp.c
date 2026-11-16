@@ -79,14 +79,21 @@ void smp_io_perm_update(unsigned logical_id)
     smp_send_ipi(logical_id, CALL_IO_PERM_UPDATE);
 }
 
-static void
+static boolean_t
 wait_for_ipi(void)
 {
-    /* This could have a timeout, but if the IPI
-     * is never delivered, its a disaster anyway */
+    int timeout = SMP_STARTUP_TIMEOUT_US;
+
+    /* A missing or wedged target must not hold the boot processor forever. */
     while (lapic->icr_low.delivery_status == SEND_PENDING) {
-	cpu_pause();
+        if (timeout == 0) {
+            printf("IPI delivery timeout\n");
+            return FALSE;
+        }
+        pit_udelay(SMP_STARTUP_POLL_US);
+        timeout -= SMP_STARTUP_POLL_US;
     }
+    return TRUE;
 }
 
 static int
@@ -105,7 +112,10 @@ smp_send_ipi_init(int apic_id)
     apic_send_ipi(NO_SHORTHAND, INIT, PHYSICAL, ASSERT, EDGE, 0, apic_id);
 
     /* Wait for delivery */
-    wait_for_ipi();
+    if (!wait_for_ipi()) {
+        printf("Timeout waiting for INIT assertion\n");
+        return -1;
+    }
 
     /* Deassert INIT IPI:
      *
@@ -117,11 +127,15 @@ smp_send_ipi_init(int apic_id)
     apic_send_ipi(NO_SHORTHAND, INIT, PHYSICAL, DE_ASSERT, EDGE, 0, apic_id);
 
     /* Wait for delivery */
-    wait_for_ipi();
+    if (!wait_for_ipi()) {
+        printf("Timeout waiting for INIT deassertion\n");
+        return -1;
+    }
 
     err = lapic->error_status.r;
     if (err) {
         printf("ESR error upon INIT 0x%x\n", err);
+        return -1;
     }
     return 0;
 }
@@ -148,7 +162,10 @@ smp_send_ipi_startup_twice(int apic_id, int vector)
         pit_udelay(10);
 
         /* Wait for other cpu to accept IPI */
-        wait_for_ipi();
+        if (!wait_for_ipi()) {
+            printf("Timeout waiting for STARTUP IPI delivery\n");
+            return -1;
+        }
         send_err = lapic->error_status.r;
 
         pit_udelay(10);
@@ -206,13 +223,12 @@ int smp_startup_cpus(unsigned bsp_apic_id, phys_addr_t start_eip)
         int apic_id = apic_get_cpu_apic_id(cpu);
         if (apic_id < 0 || apic_id == (int)bsp_apic_id)
             continue;
-        smp_send_ipi_init(apic_id);
-        err = smp_send_ipi_startup_twice(apic_id, start_eip >> STARTUP_VECTOR_SHIFT);
+        err = smp_send_ipi_init(apic_id);
+        if (!err)
+            err = smp_send_ipi_startup_twice(apic_id, start_eip >> STARTUP_VECTOR_SHIFT);
         if (err) {
             printf("FATAL: AP %d failed to start\n", cpu);
-            while(1) {
-                cpu_pause();
-            }
+            return -1;
         }
     }
     printf("done\n");

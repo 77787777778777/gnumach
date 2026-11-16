@@ -29,6 +29,10 @@ void smp_pmap_update(unsigned logical_id);
 void smp_io_perm_update(unsigned logical_id);
 int smp_startup_cpus(unsigned bsp_apic_id, phys_addr_t start_eip);
 
+/* Bound startup waits so a missing AP cannot wedge the boot processor. */
+#define SMP_STARTUP_TIMEOUT_US (5 * 1000000)
+#define SMP_STARTUP_POLL_US 100
+
 #define cpu_pause() asm volatile ("pause" : : : "memory")
 #define STARTUP_VECTOR_SHIFT	(20 - 8)
 
