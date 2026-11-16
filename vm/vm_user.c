@@ -45,10 +45,12 @@
 #include <kern/mach.server.h>
 #include <kern/mach_host.server.h>
 #include <kern/task.h>
+#include <ipc/ipc_port.h>
 #include <vm/vm_fault.h>
 #include <vm/vm_kern.h>
 #include <vm/vm_map.h>
 #include <vm/vm_object.h>
+#include <vm/memory_object.h>
 #include <vm/memory_object_proxy.h>
 #include <vm/vm_page.h>
 
@@ -518,8 +520,25 @@ kern_return_t vm_object_sync(
 	boolean_t		should_return,
 	boolean_t		should_iosync)
 {
+	boolean_t default_backed;
+
 	if (object == VM_OBJECT_NULL)
 		return KERN_INVALID_ARGUMENT;
+
+	/*
+	 *	The pages of an object that the default memory manager backs
+	 *	(anonymous memory, the files of a tmpfs) are the data itself:
+	 *	there is no file to bring up to date.  Returning them would
+	 *	only move them to the paging space, or lose them when there
+	 *	is none, and flushing them would discard them.
+	 */
+	vm_object_lock(object);
+	default_backed = object->internal ||
+		(object->pager != IP_NULL &&
+		 memory_manager_default_port(object->pager));
+	vm_object_unlock(object);
+	if (default_backed)
+		return KERN_SUCCESS;
 
 	/* FIXME: we should rather introduce an internal function, e.g.
 	   vm_object_update, rather than calling memory_object_lock_request.  */
