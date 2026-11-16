@@ -47,6 +47,12 @@ int spl_init = 0;
 
 def_simple_lock_irq_data(static, ioapic_lock)	/* Lock for non-atomic window accesses to ioapic */
 
+/* Track how many GSIs each IOAPIC handles so ioapic_toggle() and
+ * ioapic_irq_eoi() can route to the correct IOAPIC on systems with
+ * multiple IOAPICs.  Populated by ioapic_configure(). */
+static int ioapic_gsis_counts[MAX_IOAPICS];
+static int ioapic_nioapics = 1;
+
 int iunit[NINTR] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
                     16, 17, 18, 19, 20, 21, 22, 23,
 		    24, 25, 26, 27, 28, 29, 30, 31,
@@ -288,19 +294,53 @@ lapic_enable_timer(void)
     printf("LAPIC timer configured on cpu%d\n", cpu_number());
 }
 
+/*
+ * Find which IOAPIC handles a given pin (IRQ number).
+ * Returns the IOAPIC index and sets *local_pin to the pin index within
+ * that IOAPIC.  Returns -1 if no IOAPIC handles the pin.
+ */
+static int
+ioapic_find_apic(int pin, int *local_pin)
+{
+    int apic;
+    int offset = 0;
+
+    for (apic = 0; apic < ioapic_nioapics; apic++) {
+        int ngsis = ioapic_gsis_counts[apic];
+        if (pin < offset + ngsis) {
+            *local_pin = pin - offset;
+            return apic;
+        }
+        offset += ngsis;
+    }
+    return -1;
+}
+
 void
 ioapic_toggle(int pin, int mask)
 {
-    int apic = 0;
-    ioapic_toggle_entry(apic, pin, mask);
+    int apic, local_pin;
+
+    apic = ioapic_find_apic(pin, &local_pin);
+    if (apic < 0) {
+        printf("ioapic_toggle: pin %d not handled by any IOAPIC\n", pin);
+        return;
+    }
+    ioapic_toggle_entry(apic, local_pin, mask);
 }
 
 void
 ioapic_irq_eoi(int pin)
 {
-    /* FIXME: multiple ioapics (not always zero) */
-    int apic = 0;
     union ioapic_route_entry_union oldentry, entry;
+    int apic, local_pin;
+
+    apic = ioapic_find_apic(pin, &local_pin);
+    if (apic < 0) {
+        printf("ioapic_irq_eoi: pin %d not handled by any IOAPIC\n", pin);
+        lapic_eoi();
+        return;
+    }
 
     if (pin == 0)
         goto skip_specific_eoi;
@@ -317,11 +357,11 @@ ioapic_irq_eoi(int pin)
         /* Workaround for old IOAPICs with no specific EOI */
 
         /* Mask the pin and change to edge triggered */
-        ioapic_read_entry(apic, pin, &entry.both);
+        ioapic_read_entry(apic, local_pin, &entry.both);
         oldentry = entry;
         entry.both.mask = IOAPIC_MASK_DISABLED;
         entry.both.trigger = IOAPIC_EDGE_TRIGGERED;
-        ioapic_write_entry(apic, pin, entry.both);
+        ioapic_write_entry(apic, local_pin, entry.both);
 
         /* Restore level entry, keeping the pin masked while the per-irq
          * disable nesting count (i386/i386/irq.c) is held: the shared
@@ -332,7 +372,7 @@ ioapic_irq_eoi(int pin)
          * any thread can run. */
         if (keep_masked)
             oldentry.both.mask = IOAPIC_MASK_DISABLED;
-        ioapic_write_entry(apic, pin, oldentry.both);
+        ioapic_write_entry(apic, local_pin, oldentry.both);
       //}
     } else {
         volatile ApicIoUnit *ioapic = apic_get_ioapic(apic)->ioapic;
@@ -391,6 +431,9 @@ ioapic_configure(void)
     int version = ioapic_version(apic);
     int ngsis = ioapic_gsis(apic);
     int ngsis2 = 0;
+
+    ioapic_nioapics = apic_get_num_ioapics();
+    ioapic_gsis_counts[0] = ngsis;
 
     if (version >= 0x20) {
         has_irq_specific_eoi = 1;
@@ -476,6 +519,7 @@ ioapic_configure(void)
     if (apic_get_num_ioapics() > 1) {
         apic = 1;
         ngsis2 = ioapic_gsis(apic);
+        ioapic_gsis_counts[1] = ngsis2;
 
         for (pin = 0; pin < ngsis2; pin++) {
             gsi = pin + ngsis;
