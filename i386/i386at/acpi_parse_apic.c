@@ -681,7 +681,11 @@ acpi_apic_setup(struct acpi_apic *apic)
     ncpus = apic_get_numcpus();
     nioapics = apic_get_num_ioapics();
 
-    if (ncpus == 0 || nioapics == 0 || ncpus > NCPUS)
+    /* ncpus is already capped at NCPUS by apic_add_cpu() (apic.c:79),
+     * which prints a graceful "limit reached" warning for extra CPUs.
+     * Only a total absence of CPUs or IOAPICs is a genuine failure.
+     */
+    if (ncpus == 0 || nioapics == 0)
         return ACPI_APIC_FAILURE;
 
     /* Refit the apic-cpu array. */
